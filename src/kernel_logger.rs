@@ -123,7 +123,7 @@ impl Log for KernelLogger {
 struct DebuggerLogger;
 
 impl DebuggerLogger {
-    const DEBUGGER_LOGGER_MAX_MESSAGE_LEN: usize = 256;
+    const DEBUGGER_LOGGER_MAX_MESSAGE_LEN: usize = 512;
 }
 
 impl Logger for DebuggerLogger {
@@ -132,7 +132,7 @@ impl Logger for DebuggerLogger {
             String::new();
 
         if let Err(_err) = Self::write_format_record(record, &mut message) {
-            unsafe { DbgPrintEx(0, 0, b"Failed to format log record!\0\n".as_ptr()) };
+            unsafe { DbgPrintEx(0, 0, b"Failed to format log record!\n\0".as_ptr()) };
         } else {
             unsafe { DbgPrintEx(0, 0, message.as_ptr().cast()) };
         }
