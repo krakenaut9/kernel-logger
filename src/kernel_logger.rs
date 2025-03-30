@@ -6,7 +6,9 @@ use bitflags::bitflags;
 use core::fmt::Write;
 use heapless::String;
 use log::{Level, Log, Metadata, Record, SetLoggerError};
-use windows_sys::Wdk::System::SystemServices::DbgPrintEx;
+use windows_sys::Wdk::System::SystemServices::{
+    DbgPrintEx, PsGetCurrentProcessId, PsGetCurrentThreadId,
+};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -65,15 +67,17 @@ impl Default for KernelLoggerBuilder {
 }
 
 trait Logger {
-    fn log(&self, record: &Record);
+    fn log(&self, record: &Record, pid: u32, tid: u32);
 
     fn write_format_record(
         record: &Record,
+        pid: u32,
+        tid: u32,
         message: &mut impl Write,
     ) -> Result<(), core::fmt::Error> {
         core::write!(
             message,
-            "{:<5} [{}] {}\n\0",
+            "{:<5} [{pid}|{tid}] [{}] {}\n\0",
             record.level().as_str(),
             record.target(),
             record.args()
@@ -111,8 +115,10 @@ impl Log for KernelLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
+            let pid = unsafe { PsGetCurrentProcessId() as u32 };
+            let tid = unsafe { PsGetCurrentThreadId() as u32 };
             if let Some(debugger_logger) = &self.debugger_logger {
-                debugger_logger.log(record);
+                debugger_logger.log(record, pid, tid);
             }
         }
     }
@@ -127,11 +133,11 @@ impl DebuggerLogger {
 }
 
 impl Logger for DebuggerLogger {
-    fn log(&self, record: &Record) {
+    fn log(&self, record: &Record, pid: u32, tid: u32) {
         let mut message: String<{ DebuggerLogger::DEBUGGER_LOGGER_MAX_MESSAGE_LEN }> =
             String::new();
 
-        if let Err(_err) = Self::write_format_record(record, &mut message) {
+        if let Err(_err) = Self::write_format_record(record, pid, tid, &mut message) {
             unsafe { DbgPrintEx(0, 0, c"Failed to format log record!\n".as_ptr().cast()) };
         } else {
             unsafe { DbgPrintEx(0, 0, message.as_ptr().cast()) };
