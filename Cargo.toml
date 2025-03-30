@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bitflags = "2.9"
+heapless = "0.8"
+log = "0.4"
+windows-sys = { version = "0.59", features = [ "Wdk", "Wdk_System", "Wdk_System_SystemServices" ] }
