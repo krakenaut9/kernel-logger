@@ -132,7 +132,7 @@ impl Logger for DebuggerLogger {
             String::new();
 
         if let Err(_err) = Self::write_format_record(record, &mut message) {
-            unsafe { DbgPrintEx(0, 0, b"Failed to format log record!\n\0".as_ptr()) };
+            unsafe { DbgPrintEx(0, 0, c"Failed to format log record!\n".as_ptr().cast()) };
         } else {
             unsafe { DbgPrintEx(0, 0, message.as_ptr().cast()) };
         }
