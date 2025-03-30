@@ -106,7 +106,7 @@ impl Default for KernelLogger {
 
 impl Log for KernelLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() >= self.log_level
+        metadata.level() <= self.log_level
     }
 
     fn log(&self, record: &Record) {
