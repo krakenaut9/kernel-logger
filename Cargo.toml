@@ -1,10 +1,16 @@
 [package]
-name = "kernel-logger-rs"
-version = "0.1.0"
+name = "kernel-logger"
+version = "0.2.0"
 edition = "2024"
+authors = ["Dmytro Maslo <krakenaut9@gmail.com>"]
+description = "Logger for Windows kernel mode drivers"
 
 [dependencies]
-bitflags = "2.9"
-heapless = "0.8"
+bitflags = "2.11"
+heapless = "0.9"
 log = "0.4"
-windows-sys = { version = "0.59", features = [ "Wdk", "Wdk_System", "Wdk_System_SystemServices" ] }
+time = { version = "0.3", default-features = false }
+windows-sys = { version = "0.61", features = [ "Wdk", "Wdk_System", "Wdk_System_SystemServices" ] }
+
+[dev-dependencies]
+time = { version = "0.3", default-features = false, features = [ "macros" ] }

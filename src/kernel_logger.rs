@@ -1,14 +1,14 @@
 #![allow(static_mut_refs)]
 
-extern crate alloc;
-
-use bitflags::bitflags;
-use core::fmt::Write;
-use heapless::String;
-use log::{Level, Log, Metadata, Record, SetLoggerError};
-use windows_sys::Wdk::System::SystemServices::{
-    DbgPrintEx, PsGetCurrentProcessId, PsGetCurrentThreadId,
+use crate::{
+    loggers::debug::DebuggerLogger,
+    time_util::{current_time, windows_time_to_offset_datetime},
 };
+use bitflags::bitflags;
+use core::fmt::{self, Write};
+use log::{Level, Log, Metadata, Record, SetLoggerError};
+use time::OffsetDateTime;
+use windows_sys::Wdk::System::SystemServices::{PsGetCurrentProcessId, PsGetCurrentThreadId};
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -66,21 +66,43 @@ impl Default for KernelLoggerBuilder {
     }
 }
 
-trait Logger {
-    fn log(&self, record: &Record, pid: u32, tid: u32);
+pub(crate) trait Logger {
+    fn log(&self, record: &Record, pid: u32, tid: u32, timestamp: Option<OffsetDateTime>);
 
     fn write_format_record(
         record: &Record,
         pid: u32,
         tid: u32,
+        timestamp: Option<OffsetDateTime>,
         message: &mut impl Write,
     ) -> Result<(), core::fmt::Error> {
-        core::write!(
+        let timestamp = timestamp.unwrap_or(OffsetDateTime::UNIX_EPOCH);
+
+        Self::write_offset_datetime(message, timestamp)?;
+
+        write!(
             message,
-            "{:<5} [{pid}|{tid}] [{}] {}\n\0",
+            " {:<5} [{pid}|{tid}] [{}] {}\n\0",
             record.level().as_str(),
             record.target(),
             record.args()
+        )
+    }
+
+    #[inline]
+    fn write_offset_datetime<W: Write>(out: &mut W, dt: OffsetDateTime) -> fmt::Result {
+        let date = dt.date();
+        let time = dt.time();
+
+        write!(
+            out,
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            date.year(),
+            u8::from(date.month()),
+            date.day(),
+            time.hour(),
+            time.minute(),
+            time.second()
         )
     }
 }
@@ -117,8 +139,9 @@ impl Log for KernelLogger {
         if self.enabled(record.metadata()) {
             let pid = unsafe { PsGetCurrentProcessId() as u32 };
             let tid = unsafe { PsGetCurrentThreadId() as u32 };
+            let timestamp = windows_time_to_offset_datetime(current_time()).ok();
             if let Some(debugger_logger) = &self.debugger_logger {
-                debugger_logger.log(record, pid, tid);
+                debugger_logger.log(record, pid, tid, timestamp);
             }
         }
     }
@@ -126,21 +149,32 @@ impl Log for KernelLogger {
     fn flush(&self) {}
 }
 
-struct DebuggerLogger;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use heapless::String;
+    use log::{Level, Record};
 
-impl DebuggerLogger {
-    const DEBUGGER_LOGGER_MAX_MESSAGE_LEN: usize = 512;
-}
+    #[test]
+    fn test_format_log_record() {
+        let record = Record::builder()
+            .args(format_args!("Test log message"))
+            .level(Level::Info)
+            .target("test_target")
+            .build();
 
-impl Logger for DebuggerLogger {
-    fn log(&self, record: &Record, pid: u32, tid: u32) {
-        let mut message: String<{ DebuggerLogger::DEBUGGER_LOGGER_MAX_MESSAGE_LEN }> =
-            String::new();
+        let mut message = String::<{ DebuggerLogger::DEBUGGER_LOGGER_MAX_MESSAGE_LEN }>::new();
+        <DebuggerLogger as Logger>::write_format_record(
+            &record,
+            1234,
+            5678,
+            Some(OffsetDateTime::UNIX_EPOCH),
+            &mut message,
+        )
+        .unwrap();
 
-        if let Err(_err) = Self::write_format_record(record, pid, tid, &mut message) {
-            unsafe { DbgPrintEx(0, 0, c"Failed to format log record!\n".as_ptr().cast()) };
-        } else {
-            unsafe { DbgPrintEx(0, 0, message.as_ptr().cast()) };
-        }
+        let expected_message =
+            "1970-01-01 00:00:00 INFO  [1234|5678] [test_target] Test log message\n\0";
+        assert_eq!(message.as_str(), expected_message);
     }
 }
