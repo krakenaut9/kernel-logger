@@ -2,7 +2,9 @@ use crate::kernel_logger::Logger;
 use heapless::String;
 use log::Record;
 use time::OffsetDateTime;
-use windows_sys::Wdk::System::SystemServices::DbgPrintEx;
+
+// windows-sys imports DbgPrintEx from ntdll.dll, which a driver cannot load.
+windows_link::link!("ntoskrnl.exe" "C" fn DbgPrintEx(componentid: u32, level: u32, format: *const u8, ...) -> u32);
 
 pub(crate) struct DebuggerLogger;
 
