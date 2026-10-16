@@ -18,7 +18,10 @@ impl Logger for DebuggerLogger {
         if let Err(_err) = Self::write_format_record(record, pid, tid, timestamp, &mut message) {
             unsafe { DbgPrintEx(0, 0, c"Failed to format log record!\n".as_ptr().cast()) };
         } else {
-            unsafe { DbgPrintEx(0, 0, message.as_ptr().cast()) };
+            let len = i32::try_from(message.len()).unwrap_or(i32::MAX);
+            // SAFETY: a literal format, so a `%` in the line is printed as is. `%.*s` reads
+            // `len` bytes from `message`, which holds that many.
+            unsafe { DbgPrintEx(0, 0, c"%.*s".as_ptr().cast(), len, message.as_ptr()) };
         }
     }
 }

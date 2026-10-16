@@ -80,9 +80,9 @@ pub(crate) trait Logger {
 
         Self::write_offset_datetime(message, timestamp)?;
 
-        write!(
+        writeln!(
             message,
-            " {:<5} [{pid}|{tid}] [{}] {}\n\0",
+            " {:<5} [{pid}|{tid}] [{}] {}",
             record.level().as_str(),
             record.target(),
             record.args()
@@ -174,7 +174,7 @@ mod tests {
         .unwrap();
 
         let expected_message =
-            "1970-01-01 00:00:00 INFO  [1234|5678] [test_target] Test log message\n\0";
+            "1970-01-01 00:00:00 INFO  [1234|5678] [test_target] Test log message\n";
         assert_eq!(message.as_str(), expected_message);
     }
 }
