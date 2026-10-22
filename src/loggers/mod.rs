@@ -69,8 +69,7 @@ pub trait Sink: Sync {
 /// A record as a sink receives it: the record, and what the logger read from the kernel
 /// when it was logged.
 ///
-/// Its [`Display`](fmt::Display) form is the line the kernel debugger sink prints, without
-/// the newline:
+/// Its [`Display`](fmt::Display) form is the record as one line of text, without a newline:
 ///
 /// ```text
 /// 2026-05-19 10:29:12 INFO  [4|1234] [my_driver::driver] Driver started

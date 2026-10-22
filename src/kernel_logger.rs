@@ -38,7 +38,11 @@ impl KernelLoggerBuilder {
         self
     }
 
-    /// Writes records to the kernel debugger. Unless options were given with
+    /// Writes records to the kernel debugger, each as one line: the [`Entry`]'s text, then a
+    /// newline. A line takes at most 511 bytes, which `DbgPrintEx` prints whole; a longer one
+    /// is cut at a character boundary and ends with `...`.
+    ///
+    /// Unless options were given with
     /// [`with_debug_logger_options`](Self::with_debug_logger_options), it uses the defaults:
     /// the logger's level, [`DbgPrintComponent::IHV_DRIVER`] and [`DbgPrintLevel::ERROR`],
     /// which a kernel debugger always shows.
@@ -49,7 +53,8 @@ impl KernelLoggerBuilder {
         self
     }
 
-    /// Writes records to the kernel debugger, with `options`.
+    /// Writes records to the kernel debugger as
+    /// [`with_debug_logger`](Self::with_debug_logger) does, with `options`.
     ///
     /// ```
     /// use kernel_logger::kernel_logger::{
