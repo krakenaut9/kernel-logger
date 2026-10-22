@@ -6,9 +6,8 @@ authors = ["Dmytro Maslo <krakenaut9@gmail.com>"]
 description = "Logger for Windows kernel mode drivers"
 
 [dependencies]
-bitflags = "2.11"
 heapless = "0.9"
-log = "0.4"
+log = "0.4.15"
 time = { version = "0.3", default-features = false }
 windows-link = "0.2"
 windows-sys = { version = "0.61", features = [ "Wdk", "Wdk_System", "Wdk_System_SystemServices" ] }
