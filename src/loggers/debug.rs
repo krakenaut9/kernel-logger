@@ -329,7 +329,7 @@ mod tests {
         let line = line_for(format_args!("Test log message"));
         assert_eq!(
             line.text,
-            "1970-01-01 00:00:00 INFO  [1234|5678] [test_target] Test log message\n"
+            "1970-01-01 00:00:00.000000Z INFO  [1234|5678] [test_target] Test log message\n"
         );
         assert!(!line.cut);
     }

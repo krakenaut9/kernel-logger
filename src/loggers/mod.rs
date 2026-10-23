@@ -1,10 +1,9 @@
 pub mod dbgprint;
 pub mod debug;
 
-use crate::time_util::windows_time_to_offset_datetime;
+use crate::time_util::Timestamp;
 use core::fmt;
 use log::{LevelFilter, Record};
-use time::OffsetDateTime;
 
 /// A destination for records.
 ///
@@ -70,11 +69,14 @@ pub trait Sink: Sync {
 /// A record as a sink receives it: the record, and what the logger read from the kernel
 /// when it was logged.
 ///
-/// Its [`Display`](fmt::Display) form is the record as one line of text, without a newline:
+/// Its [`Display`](fmt::Display) form is the record as one line of text, without a newline,
+/// starting with the time in UTC to the microsecond:
 ///
 /// ```text
-/// 2026-05-19 10:29:12 INFO  [4|1234] [my_driver::driver] Driver started
+/// 2026-05-19 10:29:12.345678Z INFO  [4|1234] [my_driver::driver] Driver started
 /// ```
+///
+/// A time outside the years 0 to 9999 shows as `????-??-?? ??:??:??.??????Z`.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry<'a> {
     record: &'a Record<'a>,
@@ -144,19 +146,11 @@ impl<'a> Entry<'a> {
 
 impl fmt::Display for Entry<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let timestamp =
-            windows_time_to_offset_datetime(self.system_time).unwrap_or(OffsetDateTime::UNIX_EPOCH);
-        let (date, time) = (timestamp.date(), timestamp.time());
+        f.write_str(Timestamp::new(self.system_time).as_str())?;
 
         write!(
             f,
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02} {:<5} [{}|{}] [{}] {}",
-            date.year(),
-            u8::from(date.month()),
-            date.day(),
-            time.hour(),
-            time.minute(),
-            time.second(),
+            " {:<5} [{}|{}] [{}] {}",
             self.record.level().as_str(),
             self.process_id,
             self.thread_id,
@@ -209,7 +203,7 @@ mod tests {
 
         assert_eq!(
             line.as_str(),
-            "1970-01-01 00:00:00 INFO  [1234|5678] [test_target] Test log message"
+            "1970-01-01 00:00:00.000000Z INFO  [1234|5678] [test_target] Test log message"
         );
     }
 }
