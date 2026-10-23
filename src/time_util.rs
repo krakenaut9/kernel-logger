@@ -8,14 +8,14 @@ const HUNDRED_NS_PER_SECOND: i64 = 10_000_000;
 const WINDOWS_TO_UNIX_EPOCH_SECONDS: i64 = 11_644_473_600;
 
 #[cfg(test)]
-const WINDOWS_TO_UNIX_EPOCH_100NS: i128 = 11_644_473_600 * HUNDRED_NS_PER_SECOND as i128;
+const WINDOWS_TO_UNIX_EPOCH_100NS: i64 = WINDOWS_TO_UNIX_EPOCH_SECONDS * HUNDRED_NS_PER_SECOND;
 
 pub(crate) fn windows_time_to_offset_datetime(
     windows_100ns: i64,
 ) -> Result<OffsetDateTime, time::error::ComponentRange> {
     let secs = (windows_100ns / HUNDRED_NS_PER_SECOND) - WINDOWS_TO_UNIX_EPOCH_SECONDS;
 
-    let nanos = ((windows_100ns % HUNDRED_NS_PER_SECOND) * 100) as i64;
+    let nanos = (windows_100ns % HUNDRED_NS_PER_SECOND) * 100;
 
     Ok(OffsetDateTime::from_unix_timestamp(secs)? + Duration::nanoseconds(nanos))
 }
@@ -23,7 +23,7 @@ pub(crate) fn windows_time_to_offset_datetime(
 #[cfg(test)]
 pub(crate) fn offset_datetime_to_windows_time(offset_datetime: OffsetDateTime) -> Option<i64> {
     let unix_100ns = offset_datetime.unix_timestamp_nanos().div_euclid(100);
-    let windows_100ns = unix_100ns + WINDOWS_TO_UNIX_EPOCH_100NS;
+    let windows_100ns = unix_100ns + i128::from(WINDOWS_TO_UNIX_EPOCH_100NS);
     i64::try_from(windows_100ns).ok()
 }
 
@@ -31,7 +31,9 @@ pub(crate) fn offset_datetime_to_windows_time(offset_datetime: OffsetDateTime) -
 #[must_use]
 pub(crate) fn current_time() -> i64 {
     let mut timestamp = 0;
-    unsafe { KeQuerySystemTimePrecise(&mut timestamp) };
+    // SAFETY: KeQuerySystemTimePrecise writes the time to `timestamp`, a valid i64, and may
+    // be called at any IRQL.
+    unsafe { KeQuerySystemTimePrecise(&raw mut timestamp) };
     timestamp
 }
 
@@ -52,7 +54,7 @@ mod tests {
     fn unix_epoch_maps_to_known_windows_constant() {
         // The delta between Windows epoch (1601) and Unix epoch (1970) is
         // 116444736000000000 100ns ticks.
-        let windows_at_unix_epoch = WINDOWS_TO_UNIX_EPOCH_100NS as i64;
+        let windows_at_unix_epoch = WINDOWS_TO_UNIX_EPOCH_100NS;
 
         // Converting that Windows tick count must yield Unix epoch.
         let dt = windows_time_to_offset_datetime(windows_at_unix_epoch).unwrap();
@@ -77,7 +79,7 @@ mod tests {
         assert_eq!(dt2, dt);
 
         // Also check tick arithmetic: 123_456_700ns == 1_234_567 * 100ns ticks.
-        let expected = (WINDOWS_TO_UNIX_EPOCH_100NS as i64) + (nanos as i64 / 100);
+        let expected = WINDOWS_TO_UNIX_EPOCH_100NS + nanos / 100;
         assert_eq!(w, expected);
     }
 
