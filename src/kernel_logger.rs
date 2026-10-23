@@ -11,6 +11,13 @@ use core::{
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use windows_sys::Wdk::System::SystemServices::{PsGetCurrentProcessId, PsGetCurrentThreadId};
 
+// wdm.h exports KeGetCurrentIrql from ntoskrnl.exe on x64 and from hal.dll on every
+// other architecture; windows-sys names ntoskrnl.exe for all of them.
+#[cfg(target_arch = "x86_64")]
+windows_link::link!("ntoskrnl.exe" "system" fn KeGetCurrentIrql() -> u8);
+#[cfg(not(target_arch = "x86_64"))]
+windows_link::link!("hal.dll" "system" fn KeGetCurrentIrql() -> u8);
+
 // The logger that `log` calls. It stays empty until `KernelLogger::set_logger` moves a
 // logger in, which only the call that `log::set_logger` accepts does: `log` accepts one
 // logger only, so a second call changes nothing.
@@ -40,7 +47,9 @@ impl KernelLoggerBuilder {
 
     /// Writes records to the kernel debugger, each as one line: the [`Entry`]'s text, then a
     /// newline. A line takes at most 511 bytes, which `DbgPrintEx` prints whole; a longer one
-    /// is cut at a character boundary and ends with `...`.
+    /// is cut at a character boundary and ends with `...`. A record logged above DIRQL, where
+    /// `DbgPrintEx` can deadlock, is counted instead of printed:
+    /// [`KernelLogger::debug_logger_skipped_above_dirql`] returns how many.
     ///
     /// Unless options were given with
     /// [`with_debug_logger_options`](Self::with_debug_logger_options), it uses the defaults:
@@ -144,6 +153,17 @@ impl KernelLogger {
         Ok(())
     }
 
+    /// How many records the kernel debugger sink has not printed because they were logged
+    /// above DIRQL, where `DbgPrintEx` can deadlock: 0 before [`set_logger`](Self::set_logger),
+    /// and if the logger in use has no debugger sink.
+    #[must_use]
+    pub fn debug_logger_skipped_above_dirql() -> usize {
+        LOGGER
+            .get()
+            .and_then(|logger| logger.debugger.as_ref())
+            .map_or(0, DebuggerLogger::skipped_above_dirql)
+    }
+
     /// Every sink: the built-in ones that are enabled, then the driver's own.
     fn sinks(&self) -> impl Iterator<Item = &dyn Sink> {
         // Exhaustive, so that a built-in sink added as a field cannot be left out here.
@@ -191,13 +211,26 @@ impl Log for KernelLogger {
 
     fn log(&self, record: &Record) {
         let mut sinks = self.sinks_taking(record.level()).peekable();
-        // The IDs and the time are read only for a record that some sink takes.
+        // The IDs, the IRQL and the time are read only for a record that some sink takes.
         if sinks.peek().is_none() {
             return;
         }
-        // SAFETY: neither function takes an argument, and both may be called at any IRQL.
-        let (process_id, thread_id) = unsafe { (PsGetCurrentProcessId(), PsGetCurrentThreadId()) };
-        let entry = Entry::new(record, process_id.addr(), thread_id.addr(), current_time());
+        // SAFETY: none of these functions takes an argument, and each may be called at any
+        // IRQL.
+        let (process_id, thread_id, irql) = unsafe {
+            (
+                PsGetCurrentProcessId(),
+                PsGetCurrentThreadId(),
+                KeGetCurrentIrql(),
+            )
+        };
+        let entry = Entry::new(
+            record,
+            process_id.addr(),
+            thread_id.addr(),
+            irql,
+            current_time(),
+        );
         for sink in sinks {
             sink.write(&entry);
         }

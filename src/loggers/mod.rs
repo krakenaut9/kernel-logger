@@ -16,7 +16,8 @@ use time::OffsetDateTime;
 /// The logger calls a sink where the record is logged: at any IRQL, in DPCs and ISRs, and
 /// on several processors at once. So a sink must not allocate, wait, touch pageable code or
 /// data, or take a lock that the code it interrupted may hold. Nor may it log, which would
-/// call it again.
+/// call it again. A sink that cannot work at every IRQL checks [`Entry::irql`] and skips
+/// what it cannot handle, as the kernel debugger sink does above DIRQL.
 ///
 /// ```
 /// use core::sync::atomic::{AtomicUsize, Ordering};
@@ -79,6 +80,7 @@ pub struct Entry<'a> {
     record: &'a Record<'a>,
     process_id: usize,
     thread_id: usize,
+    irql: u8,
     system_time: i64,
 }
 
@@ -87,12 +89,14 @@ impl<'a> Entry<'a> {
         record: &'a Record<'a>,
         process_id: usize,
         thread_id: usize,
+        irql: u8,
         system_time: i64,
     ) -> Self {
         Self {
             record,
             process_id,
             thread_id,
+            irql,
             system_time,
         }
     }
@@ -116,6 +120,18 @@ impl<'a> Entry<'a> {
     #[must_use]
     pub const fn thread_id(&self) -> usize {
         self.thread_id
+    }
+
+    /// The IRQL the record was logged at, as `KeGetCurrentIrql` returns it.
+    ///
+    /// Above `DISPATCH_LEVEL`, the levels depend on the architecture: `HIGH_LEVEL`, for one,
+    /// is 31 on x86 and 15 on x64 and ARM64. So compare it with values made for the target,
+    /// such as those wdk-sys generates from the WDK's headers. windows-sys 0.61 gives
+    /// `CLOCK_LEVEL`, `PROFILE_LEVEL`, `IPI_LEVEL`, `POWER_LEVEL` and `HIGH_LEVEL` their x86
+    /// values on every architecture.
+    #[must_use]
+    pub const fn irql(&self) -> u8 {
+        self.irql
     }
 
     /// When the record was logged, as `KeQuerySystemTimePrecise` gives it: UTC, in
@@ -153,12 +169,31 @@ impl fmt::Display for Entry<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::fmt::Write;
+    use core::{fmt::Write, ptr};
     use heapless::String;
     use log::Level;
 
     /// 1970-01-01 00:00:00 UTC, in system time.
     const UNIX_EPOCH: i64 = 116_444_736_000_000_000;
+    /// The IRQL DPCs run at.
+    const DISPATCH_LEVEL: u8 = 2;
+
+    #[test]
+    fn an_entry_returns_what_the_logger_read() {
+        let record = Record::builder().build();
+        let entry = Entry::new(&record, 1234, 5678, DISPATCH_LEVEL, UNIX_EPOCH);
+
+        assert!(ptr::eq(entry.record(), &raw const record));
+        assert_eq!(
+            (
+                entry.process_id(),
+                entry.thread_id(),
+                entry.irql(),
+                entry.system_time()
+            ),
+            (1234, 5678, DISPATCH_LEVEL, UNIX_EPOCH)
+        );
+    }
 
     #[test]
     fn an_entry_displays_as_the_log_line() {
@@ -167,7 +202,7 @@ mod tests {
             .level(Level::Info)
             .target("test_target")
             .build();
-        let entry = Entry::new(&record, 1234, 5678, UNIX_EPOCH);
+        let entry = Entry::new(&record, 1234, 5678, DISPATCH_LEVEL, UNIX_EPOCH);
 
         let mut line = String::<512>::new();
         write!(line, "{entry}").unwrap();

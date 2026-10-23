@@ -2,7 +2,10 @@ use crate::loggers::{
     Entry, Sink,
     dbgprint::{DbgPrintComponent, DbgPrintLevel},
 };
-use core::fmt::{self, Write};
+use core::{
+    fmt::{self, Write},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use heapless::String;
 use log::LevelFilter;
 
@@ -78,6 +81,15 @@ impl Default for DebugLoggerOptions {
     }
 }
 
+// DbgPrintEx is documented for IRQL <= DIRQL and can deadlock above it, since the debugger
+// uses interprocessor interrupts. This is the first IRQL above every device IRQL in wdm.h:
+// PROFILE_LEVEL on x86, CLOCK_LEVEL on every other architecture. windows-sys's constants of
+// those names have their x86 values on every architecture, so they cannot be used here.
+#[cfg(target_arch = "x86")]
+const FIRST_IRQL_ABOVE_DIRQL: u8 = 27;
+#[cfg(not(target_arch = "x86"))]
+const FIRST_IRQL_ABOVE_DIRQL: u8 = 13;
+
 /// The size of the buffer `DbgPrintEx` formats each call into: it transmits at most this
 /// many bytes per call.
 const DBGPRINTEX_BUFFER_SIZE: usize = 512;
@@ -152,11 +164,32 @@ impl Write for Line {
 /// Writes records to the kernel debugger with `DbgPrintEx`.
 pub(crate) struct DebuggerLogger {
     options: DebugLoggerOptions,
+    /// How many records it has not printed because they were logged above DIRQL.
+    skipped_above_dirql: AtomicUsize,
 }
 
 impl DebuggerLogger {
     pub(crate) const fn new(options: DebugLoggerOptions) -> Self {
-        Self { options }
+        Self {
+            options,
+            skipped_above_dirql: AtomicUsize::new(0),
+        }
+    }
+
+    /// Whether a record logged at `irql` must be skipped: above DIRQL, where `DbgPrintEx`
+    /// can deadlock. Counts the records it skips.
+    fn skip_above_dirql(&self, irql: u8) -> bool {
+        let skip = irql >= FIRST_IRQL_ABOVE_DIRQL;
+        if skip {
+            // Only the count matters, so Relaxed ordering is enough.
+            self.skipped_above_dirql.fetch_add(1, Ordering::Relaxed);
+        }
+        skip
+    }
+
+    /// How many records it has not printed because they were logged above DIRQL.
+    pub(crate) fn skipped_above_dirql(&self) -> usize {
+        self.skipped_above_dirql.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -171,6 +204,9 @@ impl Sink for DebuggerLogger {
     }
 
     fn write(&self, entry: &Entry<'_>) {
+        if self.skip_above_dirql(entry.irql()) {
+            return;
+        }
         let line = Line::new(entry);
         let len = i32::try_from(line.text.len()).unwrap_or(i32::MAX);
         // SAFETY: a literal format, so a `%` in the line is printed as is. `%.*s` reads `len`
@@ -196,6 +232,18 @@ mod tests {
     /// 1970-01-01 00:00:00 UTC, in system time.
     const UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 
+    // IRQLs from wdm.h: the one DPCs run at, the highest a device interrupt runs at, and the
+    // highest of all.
+    const DISPATCH_LEVEL: u8 = 2;
+    #[cfg(target_arch = "x86")]
+    const HIGHEST_DIRQL: u8 = 26;
+    #[cfg(target_arch = "x86")]
+    const HIGH_LEVEL: u8 = 31;
+    #[cfg(not(target_arch = "x86"))]
+    const HIGHEST_DIRQL: u8 = 12;
+    #[cfg(not(target_arch = "x86"))]
+    const HIGH_LEVEL: u8 = 15;
+
     /// Enough `x` for any message below.
     static X_BYTES: [u8; 10 * 1024] = [b'x'; 10 * 1024];
 
@@ -214,6 +262,7 @@ mod tests {
                 .build(),
             1234,
             5678,
+            DISPATCH_LEVEL,
             UNIX_EPOCH,
         ))
     }
@@ -263,6 +312,16 @@ mod tests {
 
         let own = DebuggerLogger::new(DebugLoggerOptions::new().with_max_level(LevelFilter::Warn));
         assert_eq!(own.max_level(), Some(LevelFilter::Warn));
+    }
+
+    #[test]
+    fn records_above_dirql_are_counted_not_printed() {
+        let debugger = DebuggerLogger::new(DebugLoggerOptions::new());
+        assert!(!debugger.skip_above_dirql(DISPATCH_LEVEL));
+        assert!(!debugger.skip_above_dirql(HIGHEST_DIRQL));
+        assert!(debugger.skip_above_dirql(HIGHEST_DIRQL + 1));
+        assert!(debugger.skip_above_dirql(HIGH_LEVEL));
+        assert_eq!(debugger.skipped_above_dirql(), 2);
     }
 
     #[test]
