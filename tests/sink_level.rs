@@ -1,5 +1,5 @@
-//! A sink's own level counts for `log`'s gate, which lets through the most verbose records
-//! any sink takes.
+//! A sink's own level cannot raise the logger's: `log`'s level stays the logger's, and the
+//! sink takes no record above it.
 //!
 //! A file of its own, so that it runs in a process of its own: `log` takes one logger
 //! per process. It never logs, since that would run kernel functions.
@@ -13,16 +13,16 @@ use kernel_logger::kernel_logger::{DebugLoggerOptions, KernelLogger, KernelLogge
 use log::{Level, LevelFilter, Metadata};
 
 #[test]
-fn the_debuggers_own_level_sets_the_gate() {
+fn the_debuggers_own_level_cannot_raise_the_loggers() {
     KernelLogger::set_logger(
         KernelLoggerBuilder::new()
             .with_debug_logger_options(DebugLoggerOptions::new().with_max_level(LevelFilter::Debug))
-            .with_log_level(Level::Info)
+            .with_log_level(LevelFilter::Info)
             .build(),
     )
     .unwrap();
 
-    assert_eq!(log::max_level(), LevelFilter::Debug);
-    assert!(log::logger().enabled(&Metadata::builder().level(Level::Debug).build()));
-    assert!(!log::logger().enabled(&Metadata::builder().level(Level::Trace).build()));
+    assert_eq!(log::max_level(), LevelFilter::Info);
+    assert!(log::logger().enabled(&Metadata::builder().level(Level::Info).build()));
+    assert!(!log::logger().enabled(&Metadata::builder().level(Level::Debug).build()));
 }

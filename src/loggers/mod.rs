@@ -23,12 +23,12 @@ use log::{LevelFilter, Record};
 /// use kernel_logger::kernel_logger::{Entry, KernelLoggerBuilder, Sink};
 /// use log::LevelFilter;
 ///
-/// /// Counts the errors, whatever the logger's level.
+/// /// Counts the errors.
 /// struct ErrorCounter(AtomicUsize);
 ///
 /// impl Sink for ErrorCounter {
-///     fn max_level(&self) -> Option<LevelFilter> {
-///         Some(LevelFilter::Error)
+///     fn max_level(&self) -> LevelFilter {
+///         LevelFilter::Error
 ///     }
 ///
 ///     fn write(&self, _entry: &Entry<'_>) {
@@ -46,16 +46,16 @@ use log::{LevelFilter, Record};
 /// // ...then `KernelLogger::set_logger(logger)`.
 /// ```
 pub trait Sink: Sync {
-    /// The most verbose records this sink takes, or `None`, the default, for the logger's
-    /// level ([`with_log_level`](crate::kernel_logger::KernelLoggerBuilder::with_log_level)).
+    /// The most verbose records this sink takes: [`LevelFilter::Trace`], the default, takes
+    /// every record the logger's level
+    /// ([`with_log_level`](crate::kernel_logger::KernelLoggerBuilder::with_log_level)) lets
+    /// through, and [`LevelFilter::Off`] none. No sink takes a record above the logger's
+    /// level, whatever this returns.
     ///
-    /// It is read for every record.
-    /// [`set_logger`](crate::kernel_logger::KernelLogger::set_logger) also reads it once, to
-    /// set `log`'s level to the most verbose any sink takes, and the `log` macros drop a
-    /// record above that level before any sink sees it. So a sink may lower its level later,
-    /// but cannot raise it above `log`'s level for records from the `log` macros.
-    fn max_level(&self) -> Option<LevelFilter> {
-        None
+    /// It is read for every record within the logger's level, so a sink may change it at any
+    /// time.
+    fn max_level(&self) -> LevelFilter {
+        LevelFilter::Trace
     }
 
     /// Writes `entry`, a record at [`max_level`](Self::max_level) or below.
@@ -171,6 +171,18 @@ mod tests {
     const UNIX_EPOCH: i64 = 116_444_736_000_000_000;
     /// The IRQL DPCs run at.
     const DISPATCH_LEVEL: u8 = 2;
+
+    #[test]
+    fn a_sinks_level_is_trace_unless_it_sets_one() {
+        /// A sink that keeps the default level.
+        struct Plain;
+
+        impl Sink for Plain {
+            fn write(&self, _entry: &Entry<'_>) {}
+        }
+
+        assert_eq!(Plain.max_level(), LevelFilter::Trace);
+    }
 
     #[test]
     fn an_entry_returns_what_the_logger_read() {

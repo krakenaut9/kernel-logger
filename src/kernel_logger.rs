@@ -24,7 +24,7 @@ windows_link::link!("hal.dll" "system" fn KeGetCurrentIrql() -> u8);
 static LOGGER: LoggerCell = LoggerCell::new();
 
 pub struct KernelLoggerBuilder {
-    log_level: Level,
+    log_level: LevelFilter,
     debug_logger: Option<DebugLoggerOptions>,
     sinks: &'static [&'static dyn Sink],
 }
@@ -35,12 +35,32 @@ impl KernelLoggerBuilder {
         Self::default()
     }
 
-    /// The logger's level: each sink takes the records up to `level`, unless it has a level
-    /// of its own, such as [`DebugLoggerOptions::with_max_level`] or [`Sink::max_level`].
+    /// The logger's level: the most verbose records it logs, [`LevelFilter::Info`] unless
+    /// set. A sink takes the records within it, or fewer with a level of its own
+    /// ([`Sink::max_level`], [`DebugLoggerOptions::with_max_level`]), never more.
+    ///
+    /// [`KernelLogger::set_logger`] gives this level to `log` with [`log::set_max_level`],
+    /// and from then on [`log::max_level`] is the logger's level. The `log` macros check it
+    /// before they build a record, and the logger checks it again, for a record passed to
+    /// `log::logger().log` directly. So `log::set_max_level` changes it while the driver
+    /// runs, from an IOCTL handler for example. It is a single atomic store, so any IRQL
+    /// will do:
+    ///
+    /// ```
+    /// log::set_max_level(log::LevelFilter::Debug);
+    /// ```
+    ///
+    /// `log` can also remove levels at compile time, at no cost at run time. With this in
+    /// the driver's `Cargo.toml`, release builds compile `debug!` and `trace!` to nothing:
+    ///
+    /// ```toml
+    /// log = { version = "0.4", features = ["release_max_level_info"] }
+    /// ```
+    ///
     /// This is `log`'s level; the level the debugger filters records by is
     /// [`DebugLoggerOptions::with_dbgprint_level`].
     #[must_use]
-    pub fn with_log_level(mut self, level: Level) -> Self {
+    pub fn with_log_level(mut self, level: LevelFilter) -> Self {
         self.log_level = level;
         self
     }
@@ -53,8 +73,8 @@ impl KernelLoggerBuilder {
     ///
     /// Unless options were given with
     /// [`with_debug_logger_options`](Self::with_debug_logger_options), it uses the defaults:
-    /// the logger's level, [`DbgPrintComponent::IHV_DRIVER`] and [`DbgPrintLevel::ERROR`],
-    /// which a kernel debugger always shows.
+    /// every record the logger's level lets through, [`DbgPrintComponent::IHV_DRIVER`] and
+    /// [`DbgPrintLevel::ERROR`], which a kernel debugger always shows.
     #[must_use]
     pub fn with_debug_logger(mut self) -> Self {
         self.debug_logger
@@ -69,7 +89,6 @@ impl KernelLoggerBuilder {
     /// use kernel_logger::kernel_logger::{
     ///     DbgPrintComponent, DbgPrintLevel, DebugLoggerOptions, KernelLoggerBuilder,
     /// };
-    /// use log::Level;
     ///
     /// // A network driver whose records are shown once the debugger enables INFO for its
     /// // component: `ed nt!Kd_IHVNETWORK_Mask 0x8`.
@@ -79,7 +98,6 @@ impl KernelLoggerBuilder {
     ///             .with_component(DbgPrintComponent::IHV_NETWORK)
     ///             .with_dbgprint_level(DbgPrintLevel::INFO),
     ///     )
-    ///     .with_log_level(Level::Info)
     ///     .build();
     /// // ...then `KernelLogger::set_logger(logger)`.
     /// ```
@@ -90,8 +108,8 @@ impl KernelLoggerBuilder {
     }
 
     /// Writes records to `sinks` as well: sinks of the driver's own, written to after the
-    /// built-in ones, in the order given. Each takes the records up to its own
-    /// [`Sink::max_level`], or else up to the logger's level.
+    /// built-in ones, in the order given. Each takes the records the logger's level lets
+    /// through, up to its own [`Sink::max_level`].
     ///
     /// The list can be as long as needed, and nothing is allocated: the logger keeps the
     /// `'static` list itself, usually a `static` array, as in [`Sink`]'s example. A second
@@ -120,7 +138,7 @@ impl KernelLoggerBuilder {
 impl Default for KernelLoggerBuilder {
     fn default() -> Self {
         Self {
-            log_level: Level::Trace,
+            log_level: LevelFilter::Info,
             debug_logger: None,
             sinks: &[],
         }
@@ -128,8 +146,8 @@ impl Default for KernelLoggerBuilder {
 }
 
 pub struct KernelLogger {
-    /// The most verbose records a sink with no level of its own takes.
-    log_level: Level,
+    /// The level `set_logger` gives `log`, which is the logger's level from then on.
+    log_level: LevelFilter,
     /// The kernel debugger sink, if it is enabled.
     debugger: Option<DebuggerLogger>,
     /// The driver's own sinks.
@@ -138,18 +156,22 @@ pub struct KernelLogger {
 
 impl KernelLogger {
     /// Installs `logger` as the logger the `log` macros write to, and sets `log`'s level to
-    /// the most verbose records any of its sinks takes: `Off` if it has none.
+    /// the logger's ([`KernelLoggerBuilder::with_log_level`]), replacing any level set
+    /// before. From then on, `log::set_max_level` changes the logger's level.
     ///
     /// Only the first call installs a logger. A later one fails and changes nothing, so
-    /// the logger in use stays as it is.
+    /// the logger in use and `log`'s level stay as they are.
     ///
     /// # Errors
     ///
     /// If a logger is already installed, by an earlier call or by `log::set_logger`.
     pub fn set_logger(logger: Self) -> Result<(), SetLoggerError> {
-        let max_level = logger.max_level();
+        let log_level = logger.log_level;
+
         LOGGER.install(logger)?;
-        log::set_max_level(max_level);
+
+        log::set_max_level(log_level);
+
         Ok(())
     }
 
@@ -176,24 +198,17 @@ impl KernelLogger {
         built_in.chain(sinks.iter().copied())
     }
 
-    /// The most verbose records `sink` takes: its own level, or else the logger's.
-    fn level_of(&self, sink: &dyn Sink) -> LevelFilter {
-        sink.max_level()
-            .unwrap_or_else(|| self.log_level.to_level_filter())
-    }
+    /// The sinks that take a record at `level` while `log`'s level, which is the logger's,
+    /// is `log_level`: none above it, and otherwise those whose own level takes it.
+    fn sinks_taking(
+        &self,
+        level: Level,
+        log_level: LevelFilter,
+    ) -> impl Iterator<Item = &dyn Sink> {
+        let within_log_level = level <= log_level;
 
-    /// The most verbose records any sink takes: `Off` without sinks.
-    fn max_level(&self) -> LevelFilter {
         self.sinks()
-            .map(|sink| self.level_of(sink))
-            .max()
-            .unwrap_or(LevelFilter::Off)
-    }
-
-    /// The sinks that take a record at `level`.
-    fn sinks_taking(&self, level: Level) -> impl Iterator<Item = &dyn Sink> {
-        self.sinks()
-            .filter(move |&sink| level <= self.level_of(sink))
+            .filter(move |&sink| within_log_level && level <= sink.max_level())
     }
 }
 
@@ -204,13 +219,22 @@ impl Default for KernelLogger {
     }
 }
 
+// Both methods check `log`'s level, which is the logger's, although the `log` macros check
+// it before calling them: code can also call `log::logger()` directly, skipping the macros,
+// and `log` leaves the filtering to the logger. For a record from the macros, the check
+// passes, and only rereads a value the macro has just read.
 impl Log for KernelLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        self.sinks_taking(metadata.level()).next().is_some()
+        self.sinks_taking(metadata.level(), log::max_level())
+            .next()
+            .is_some()
     }
 
     fn log(&self, record: &Record) {
-        let mut sinks = self.sinks_taking(record.level()).peekable();
+        let mut sinks = self
+            .sinks_taking(record.level(), log::max_level())
+            .peekable();
+
         // The IDs, the IRQL and the time are read only for a record that some sink takes.
         if sinks.peek().is_none() {
             return;
@@ -315,11 +339,11 @@ mod tests {
     use super::*;
     use core::{ptr, sync::atomic::AtomicUsize};
 
-    /// A sink of the driver's own that drops what it gets, with a level of its own or none.
-    struct Quiet(Option<LevelFilter>);
+    /// A sink of the driver's own that drops what it gets, with a level of its own.
+    struct Quiet(LevelFilter);
 
     impl Sink for Quiet {
-        fn max_level(&self) -> Option<LevelFilter> {
+        fn max_level(&self) -> LevelFilter {
             self.0
         }
 
@@ -337,10 +361,6 @@ mod tests {
         }
     }
 
-    fn at(level: Level) -> Metadata<'static> {
-        Metadata::builder().level(level).build()
-    }
-
     /// The addresses of `sinks`, which tell them apart.
     fn addresses<'a>(sinks: impl IntoIterator<Item = &'a dyn Sink>) -> heapless::Vec<*const (), 4> {
         sinks
@@ -350,18 +370,25 @@ mod tests {
     }
 
     #[test]
-    fn with_debug_logger_takes_the_loggers_level_and_the_default_options() {
-        let logger = KernelLoggerBuilder::new()
-            .with_debug_logger()
-            .with_log_level(Level::Info)
+    fn the_level_is_info_unless_with_log_level_sets_another() {
+        let default = KernelLoggerBuilder::new().build();
+        let off = KernelLoggerBuilder::new()
+            .with_log_level(LevelFilter::Off)
             .build();
+
+        assert_eq!(default.log_level, LevelFilter::Info);
+        assert_eq!(KernelLogger::default().log_level, LevelFilter::Info);
+        assert_eq!(off.log_level, LevelFilter::Off);
+    }
+
+    #[test]
+    fn with_debug_logger_uses_the_default_options() {
+        let logger = KernelLoggerBuilder::new().with_debug_logger().build();
+
         assert_eq!(
             logger.debugger.as_ref().map(DebuggerLogger::options),
             Some(DebugLoggerOptions::new())
         );
-        assert!(logger.enabled(&at(Level::Info)));
-        assert!(!logger.enabled(&at(Level::Debug)));
-        assert_eq!(logger.max_level(), LevelFilter::Info);
     }
 
     #[test]
@@ -372,16 +399,12 @@ mod tests {
             .with_dbgprint_level(DbgPrintLevel::INFO);
         let logger = KernelLoggerBuilder::new()
             .with_debug_logger_options(options)
-            .with_log_level(Level::Info)
             .build();
+
         assert_eq!(
             logger.debugger.as_ref().map(DebuggerLogger::options),
             Some(options)
         );
-        // The debugger's own level, not the logger's.
-        assert!(logger.enabled(&at(Level::Debug)));
-        assert!(!logger.enabled(&at(Level::Trace)));
-        assert_eq!(logger.max_level(), LevelFilter::Debug);
     }
 
     #[test]
@@ -398,58 +421,85 @@ mod tests {
     }
 
     #[test]
-    fn a_logger_without_sinks_keeps_its_level_and_logs_nothing() {
-        let logger = KernelLoggerBuilder::new()
-            .with_log_level(Level::Info)
-            .build();
-        assert_eq!(logger.log_level, Level::Info);
-        assert!(!logger.enabled(&at(Level::Error)));
-        assert_eq!(logger.max_level(), LevelFilter::Off);
+    fn a_logger_without_sinks_logs_nothing() {
+        let logger = KernelLogger::default();
 
-        let default = KernelLogger::default();
-        assert!(!default.enabled(&at(Level::Error)));
-        assert_eq!(default.max_level(), LevelFilter::Off);
+        assert!(
+            logger
+                .sinks_taking(Level::Error, LevelFilter::Trace)
+                .next()
+                .is_none()
+        );
     }
 
     #[test]
-    fn each_sink_takes_the_records_up_to_its_own_level_or_else_the_loggers() {
-        static UP_TO_DEBUG: Quiet = Quiet(Some(LevelFilter::Debug));
-        static AT_LOGGERS_LEVEL: Quiet = Quiet(None);
-        static NOTHING: Quiet = Quiet(Some(LevelFilter::Off));
-        static SINKS: [&dyn Sink; 3] = [&UP_TO_DEBUG, &AT_LOGGERS_LEVEL, &NOTHING];
+    fn each_sink_takes_the_records_up_to_its_own_level() {
+        static UP_TO_DEBUG: Quiet = Quiet(LevelFilter::Debug);
+        static EVERY: Quiet = Quiet(LevelFilter::Trace);
+        static NOTHING: Quiet = Quiet(LevelFilter::Off);
+        static SINKS: [&dyn Sink; 3] = [&UP_TO_DEBUG, &EVERY, &NOTHING];
 
         let logger = KernelLoggerBuilder::new()
             .with_debug_logger_options(DebugLoggerOptions::new().with_max_level(LevelFilter::Warn))
             .with_sinks(&SINKS)
-            .with_log_level(Level::Info)
             .build();
         let debugger: &dyn Sink = logger.debugger.as_ref().unwrap();
 
         // The debugger first, then the driver's own sinks, in their order.
-        let up_to_warn: [&dyn Sink; 3] = [debugger, &UP_TO_DEBUG, &AT_LOGGERS_LEVEL];
-        let up_to_info: [&dyn Sink; 2] = [&UP_TO_DEBUG, &AT_LOGGERS_LEVEL];
-        let up_to_debug: [&dyn Sink; 1] = [&UP_TO_DEBUG];
-        assert_eq!(
-            addresses(logger.sinks_taking(Level::Warn)),
-            addresses(up_to_warn)
-        );
-        assert_eq!(
-            addresses(logger.sinks_taking(Level::Info)),
-            addresses(up_to_info)
-        );
-        assert_eq!(
-            addresses(logger.sinks_taking(Level::Debug)),
-            addresses(up_to_debug)
-        );
-        assert!(logger.sinks_taking(Level::Trace).next().is_none());
+        let taking_warn: [&dyn Sink; 3] = [debugger, &UP_TO_DEBUG, &EVERY];
+        let taking_debug: [&dyn Sink; 2] = [&UP_TO_DEBUG, &EVERY];
+        let taking_trace: [&dyn Sink; 1] = [&EVERY];
 
-        assert_eq!(logger.max_level(), LevelFilter::Debug);
+        // With `log`'s level at Trace, only their own levels count.
+        assert_eq!(
+            addresses(logger.sinks_taking(Level::Warn, LevelFilter::Trace)),
+            addresses(taking_warn)
+        );
+        assert_eq!(
+            addresses(logger.sinks_taking(Level::Debug, LevelFilter::Trace)),
+            addresses(taking_debug)
+        );
+        assert_eq!(
+            addresses(logger.sinks_taking(Level::Trace, LevelFilter::Trace)),
+            addresses(taking_trace)
+        );
+    }
+
+    #[test]
+    fn no_sink_takes_a_record_above_the_loggers_level() {
+        static EVERY: Quiet = Quiet(LevelFilter::Trace);
+        static SINKS: [&dyn Sink; 1] = [&EVERY];
+
+        let logger = KernelLoggerBuilder::new()
+            .with_debug_logger()
+            .with_sinks(&SINKS)
+            .build();
+        let debugger: &dyn Sink = logger.debugger.as_ref().unwrap();
+        let both: [&dyn Sink; 2] = [debugger, &EVERY];
+
+        // Their own levels take every record, so only `log`'s level stops one.
+        assert_eq!(
+            addresses(logger.sinks_taking(Level::Info, LevelFilter::Info)),
+            addresses(both)
+        );
+        assert!(
+            logger
+                .sinks_taking(Level::Debug, LevelFilter::Info)
+                .next()
+                .is_none()
+        );
+        assert!(
+            logger
+                .sinks_taking(Level::Error, LevelFilter::Off)
+                .next()
+                .is_none()
+        );
     }
 
     #[test]
     fn with_sinks_replaces_the_sinks_given_before() {
-        static FIRST: Quiet = Quiet(Some(LevelFilter::Error));
-        static SECOND: Quiet = Quiet(Some(LevelFilter::Warn));
+        static FIRST: Quiet = Quiet(LevelFilter::Error);
+        static SECOND: Quiet = Quiet(LevelFilter::Warn);
         static FIRST_SINKS: [&dyn Sink; 1] = [&FIRST];
         static SECOND_SINKS: [&dyn Sink; 1] = [&SECOND];
 

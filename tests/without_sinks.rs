@@ -1,4 +1,5 @@
-//! A logger built without any sink, not even the debugger, turns logging off.
+//! A logger built without any sink, not even the debugger, logs nothing, whatever its
+//! level.
 //!
 //! A file of its own, so that it runs in a process of its own: `log` takes one logger
 //! per process. It never logs, since that would run kernel functions.
@@ -9,15 +10,17 @@
 #![cfg(not(target_arch = "x86"))]
 
 use kernel_logger::kernel_logger::{KernelLogger, KernelLoggerBuilder};
-use log::{Level, LevelFilter};
+use log::{Level, LevelFilter, Metadata};
 
 #[test]
-fn a_logger_without_the_debugger_turns_logging_off() {
+fn a_logger_without_sinks_logs_nothing() {
     KernelLogger::set_logger(
         KernelLoggerBuilder::new()
-            .with_log_level(Level::Info)
+            .with_log_level(LevelFilter::Trace)
             .build(),
     )
     .unwrap();
-    assert_eq!(log::max_level(), LevelFilter::Off);
+
+    assert_eq!(log::max_level(), LevelFilter::Trace);
+    assert!(!log::logger().enabled(&Metadata::builder().level(Level::Error).build()));
 }

@@ -1,5 +1,5 @@
-//! A driver's own sinks are enough for a logger, without the debugger, and their levels
-//! count for `log`'s gate.
+//! A driver's own sinks are enough for a logger, without the debugger, and each takes the
+//! records up to its own level.
 //!
 //! A file of its own, so that it runs in a process of its own: `log` takes one logger
 //! per process. It never logs, since that would run kernel functions.
@@ -12,32 +12,27 @@
 use kernel_logger::kernel_logger::{Entry, KernelLogger, KernelLoggerBuilder, Sink};
 use log::{Level, LevelFilter, Metadata};
 
-/// A sink that drops what it gets, with a level of its own or none.
-struct Quiet(Option<LevelFilter>);
+/// A sink that drops what it gets, with a level of its own.
+struct Quiet(LevelFilter);
 
 impl Sink for Quiet {
-    fn max_level(&self) -> Option<LevelFilter> {
+    fn max_level(&self) -> LevelFilter {
         self.0
     }
 
     fn write(&self, _entry: &Entry<'_>) {}
 }
 
-static UP_TO_DEBUG: Quiet = Quiet(Some(LevelFilter::Debug));
-static AT_LOGGERS_LEVEL: Quiet = Quiet(None);
-static SINKS: [&dyn Sink; 2] = [&UP_TO_DEBUG, &AT_LOGGERS_LEVEL];
+static UP_TO_WARN: Quiet = Quiet(LevelFilter::Warn);
+static SINKS: [&dyn Sink; 1] = [&UP_TO_WARN];
 
 #[test]
-fn the_drivers_own_sinks_set_the_gate() {
-    KernelLogger::set_logger(
-        KernelLoggerBuilder::new()
-            .with_sinks(&SINKS)
-            .with_log_level(Level::Info)
-            .build(),
-    )
-    .unwrap();
+fn the_drivers_own_sinks_take_the_records_up_to_their_level() {
+    KernelLogger::set_logger(KernelLoggerBuilder::new().with_sinks(&SINKS).build()).unwrap();
 
-    assert_eq!(log::max_level(), LevelFilter::Debug);
-    assert!(log::logger().enabled(&Metadata::builder().level(Level::Debug).build()));
-    assert!(!log::logger().enabled(&Metadata::builder().level(Level::Trace).build()));
+    // The logger's level, Info by default, lets an info record through; the sink's own
+    // level stops it.
+    assert_eq!(log::max_level(), LevelFilter::Info);
+    assert!(log::logger().enabled(&Metadata::builder().level(Level::Warn).build()));
+    assert!(!log::logger().enabled(&Metadata::builder().level(Level::Info).build()));
 }

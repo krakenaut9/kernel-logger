@@ -15,18 +15,18 @@ windows_link::link!("ntoskrnl.exe" "C" fn DbgPrintEx(componentid: u32, level: u3
 /// How the kernel debugger logger handles records: which records it takes, and under which
 /// `DbgPrintEx` component ID and at which `DbgPrintEx` level it prints them.
 ///
-/// The defaults are the logger's level, [`DbgPrintComponent::IHV_DRIVER`] and
-/// [`DbgPrintLevel::ERROR`], which a kernel debugger always shows. A record at any other
-/// `DbgPrintEx` level is shown only once its component's filter mask enables it; see
-/// [`DbgPrintLevel`].
+/// By default it takes every record the logger's level lets through, and prints it under
+/// [`DbgPrintComponent::IHV_DRIVER`] at [`DbgPrintLevel::ERROR`], which a kernel debugger
+/// always shows. A record at any other `DbgPrintEx` level is shown only once its
+/// component's filter mask enables it; see [`DbgPrintLevel`].
 ///
 /// ```
 /// use kernel_logger::kernel_logger::{DbgPrintComponent, DbgPrintLevel, DebugLoggerOptions};
 /// use log::LevelFilter;
 ///
 /// // A network driver, whose records are shown once the debugger enables INFO for its
-/// // component: `ed nt!Kd_IHVNETWORK_Mask 0x8`. It also takes debug records, whatever the
-/// // logger's level.
+/// // component: `ed nt!Kd_IHVNETWORK_Mask 0x8`. It takes no trace records, even when the
+/// // logger's level lets them through.
 /// let options = DebugLoggerOptions::new()
 ///     .with_component(DbgPrintComponent::IHV_NETWORK)
 ///     .with_dbgprint_level(DbgPrintLevel::INFO)
@@ -34,29 +34,29 @@ windows_link::link!("ntoskrnl.exe" "C" fn DbgPrintEx(componentid: u32, level: u3
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DebugLoggerOptions {
-    max_level: Option<LevelFilter>,
+    max_level: LevelFilter,
     component: DbgPrintComponent,
     dbgprint_level: DbgPrintLevel,
 }
 
 impl DebugLoggerOptions {
-    /// The defaults: the logger's level, [`DbgPrintComponent::IHV_DRIVER`] and
-    /// [`DbgPrintLevel::ERROR`].
+    /// The defaults: every record the logger's level lets through,
+    /// [`DbgPrintComponent::IHV_DRIVER`] and [`DbgPrintLevel::ERROR`].
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            max_level: None,
+            max_level: LevelFilter::Trace,
             component: DbgPrintComponent::IHV_DRIVER,
             dbgprint_level: DbgPrintLevel::ERROR,
         }
     }
 
-    /// Takes the records up to `level`, instead of those up to the logger's level
-    /// ([`KernelLoggerBuilder::with_log_level`](crate::kernel_logger::KernelLoggerBuilder::with_log_level)).
-    /// With [`LevelFilter::Off`] it takes none.
+    /// Takes only the records up to `level`, and never one above the logger's level
+    /// ([`KernelLoggerBuilder::with_log_level`](crate::kernel_logger::KernelLoggerBuilder::with_log_level)),
+    /// whatever `level` is. With [`LevelFilter::Off`] it takes none.
     #[must_use]
     pub const fn with_max_level(mut self, level: LevelFilter) -> Self {
-        self.max_level = Some(level);
+        self.max_level = level;
         self
     }
 
@@ -199,7 +199,7 @@ impl DebuggerLogger {
 }
 
 impl Sink for DebuggerLogger {
-    fn max_level(&self) -> Option<LevelFilter> {
+    fn max_level(&self) -> LevelFilter {
         self.options.max_level
     }
 
@@ -288,7 +288,11 @@ mod tests {
                 defaults.component,
                 defaults.dbgprint_level
             ),
-            (None, DbgPrintComponent::IHV_DRIVER, DbgPrintLevel::ERROR)
+            (
+                LevelFilter::Trace,
+                DbgPrintComponent::IHV_DRIVER,
+                DbgPrintLevel::ERROR
+            )
         );
 
         let options = DebugLoggerOptions::new()
@@ -298,7 +302,7 @@ mod tests {
         assert_eq!(
             (options.max_level, options.component, options.dbgprint_level),
             (
-                Some(LevelFilter::Debug),
+                LevelFilter::Debug,
                 DbgPrintComponent::IHV_BUS,
                 DbgPrintLevel::TRACE
             )
@@ -307,11 +311,11 @@ mod tests {
 
     #[test]
     fn the_debugger_takes_the_level_of_its_options() {
-        let inherits = DebuggerLogger::new(DebugLoggerOptions::new());
-        assert_eq!(inherits.max_level(), None);
+        let default = DebuggerLogger::new(DebugLoggerOptions::new());
+        assert_eq!(default.max_level(), LevelFilter::Trace);
 
         let own = DebuggerLogger::new(DebugLoggerOptions::new().with_max_level(LevelFilter::Warn));
-        assert_eq!(own.max_level(), Some(LevelFilter::Warn));
+        assert_eq!(own.max_level(), LevelFilter::Warn);
     }
 
     #[test]

@@ -11,7 +11,7 @@
 use kernel_logger::kernel_logger::{KernelLogger, KernelLoggerBuilder};
 use log::{Level, LevelFilter, Metadata};
 
-fn logger_at(level: Level) -> KernelLogger {
+fn logger_at(level: LevelFilter) -> KernelLogger {
     KernelLoggerBuilder::new()
         .with_debug_logger()
         .with_log_level(level)
@@ -22,11 +22,11 @@ fn logger_at(level: Level) -> KernelLogger {
 fn a_second_set_logger_fails_and_changes_nothing() {
     let debug = Metadata::builder().level(Level::Debug).build();
 
-    KernelLogger::set_logger(logger_at(Level::Info)).unwrap();
+    KernelLogger::set_logger(logger_at(LevelFilter::Info)).unwrap();
     assert_eq!(log::max_level(), LevelFilter::Info);
     assert!(!log::logger().enabled(&debug));
 
-    assert!(KernelLogger::set_logger(logger_at(Level::Trace)).is_err());
+    assert!(KernelLogger::set_logger(logger_at(LevelFilter::Trace)).is_err());
     assert_eq!(log::max_level(), LevelFilter::Info);
     assert!(!log::logger().enabled(&debug));
 }
