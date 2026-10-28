@@ -116,23 +116,30 @@ struct Line {
 }
 
 impl Line {
-    /// The line for `entry`: its text, the marker if the text was cut, and the newline.
-    fn new(entry: &Entry<'_>) -> Self {
-        let mut line = Self {
+    /// An empty line, to be filled in place by [`write_entry`](Self::write_entry). A
+    /// constructor that returned a filled line would copy all of it: the compiler does not
+    /// build a value in the caller's frame once `write!` has borrowed it.
+    const fn new() -> Self {
+        Self {
             text: String::new(),
             cut: false,
-        };
+        }
+    }
+
+    /// Writes the line for `entry` into this empty line: its text, the marker if the text was
+    /// cut, and the newline.
+    fn write_entry(&mut self, entry: &Entry<'_>) {
         // Formatting stops at the first error: the one `write_str` returns when it cuts the
         // text, or one from a value that failed to format. Either way, the rest is missing.
-        if write!(line, "{entry}").is_err() {
-            line.cut = true;
+        if write!(self, "{entry}").is_err() {
+            self.cut = true;
         }
+
         // TEXT_CAPACITY leaves room for both, so neither push fails.
-        if line.cut {
-            let _ = line.text.push_str(CUT_MARKER);
+        if self.cut {
+            let _ = self.text.push_str(CUT_MARKER);
         }
-        let _ = line.text.push_str(NEWLINE);
-        line
+        let _ = self.text.push_str(NEWLINE);
     }
 }
 
@@ -140,8 +147,8 @@ impl Write for Line {
     /// Appends `text` if it all fits. Otherwise appends the part that fits, cut at a
     /// character boundary, and returns an error, since `write_str` may succeed only when it
     /// wrote all of `text`. The error stops the formatting, so the rest of the record is not
-    /// formatted only to be dropped, and `cut` tells `new` what happened. After a cut, it
-    /// appends nothing more.
+    /// formatted only to be dropped, and `cut` tells `write_entry` what happened. After a cut,
+    /// it appends nothing more.
     fn write_str(&mut self, text: &str) -> fmt::Result {
         if self.cut {
             return Err(fmt::Error);
@@ -207,7 +214,10 @@ impl Sink for DebuggerLogger {
         if self.skip_above_dirql(entry.irql()) {
             return;
         }
-        let line = Line::new(entry);
+
+        let mut line = Line::new();
+        line.write_entry(entry);
+
         let len = i32::try_from(line.text.len()).unwrap_or(i32::MAX);
         // SAFETY: a literal format, so a `%` in the line is printed as is. `%.*s` reads `len`
         // bytes from the line, which holds that many.
@@ -254,7 +264,8 @@ mod tests {
 
     /// The line for an info record with `message`.
     fn line_for(message: fmt::Arguments<'_>) -> Line {
-        Line::new(&Entry::new(
+        let mut line = Line::new();
+        line.write_entry(&Entry::new(
             &Record::builder()
                 .args(message)
                 .level(Level::Info)
@@ -264,7 +275,9 @@ mod tests {
             5678,
             DISPATCH_LEVEL,
             UNIX_EPOCH,
-        ))
+        ));
+
+        line
     }
 
     /// How long a line is before its message.
