@@ -38,7 +38,7 @@ pub(crate) fn current_time() -> i64 {
 }
 
 /// The length of a timestamp: `2026-05-19 10:29:12.345678Z`.
-const TIMESTAMP_LEN: usize = 27;
+pub(crate) const TIMESTAMP_LEN: usize = 27;
 /// A timestamp before its digits are written over the zeros.
 const TIMESTAMP_TEMPLATE: [u8; TIMESTAMP_LEN] = *b"0000-00-00 00:00:00.000000Z";
 /// Stands in for a time outside the years 0 to 9999, in the same width, so that the columns
